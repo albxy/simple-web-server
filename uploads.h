@@ -186,7 +186,7 @@ handle_upload_request(
 	return res;
 }
 
-void logout(http::request<http::empty_body> &req_, ssl::stream<beast::tcp_stream> &stream_) {
+void logout(http::request<http::buffer_body> &req_, ssl::stream<beast::tcp_stream> &stream_) {
 	tcp::endpoint remote_endpoint = stream_.next_layer().socket().remote_endpoint();
 	std::string client_ip = remote_endpoint.address().to_string();
 	boost::posix_time::ptime currentTime = boost::posix_time::second_clock::local_time();

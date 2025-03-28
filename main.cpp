@@ -38,7 +38,7 @@ class session : public std::enable_shared_from_this<session>
     beast::flat_buffer buffer_;
     std::shared_ptr <std::string const> doc_root_;
     net::steady_timer total_connection_timer_; // Timer for total connection duration
-    boost::optional<http::request_parser<http::empty_body>> parser_;
+    boost::optional<http::request_parser<http::buffer_body>> parser_;
 public:
     // Take ownership of the socket
     explicit
@@ -173,8 +173,8 @@ public:
 					return;
                 }
 				boundary = boundary.substr(boundary_start_pos,boundary_end_pos-boundary_start_pos);
-                http::request_parser<http::buffer_body> parser{ std::move(*parser_) };
-                send_response(handle_upload_request(stream_, buffer_, parser,upload_dir + decoded_req_target.substr(6)));
+            //    http::request_parser<http::buffer_body> parser{ std::move(*parser_) };
+                send_response(handle_upload_request(stream_, buffer_, *parser_,upload_dir + decoded_req_target.substr(6)));
             }
             else
             {
