@@ -53,140 +53,151 @@ size_t find(const char* buf, std::string& substr, size_t startpos, size_t len)
 	}
 	return -1;
 }
-void copy(char* buf, size_t startpos, size_t len)
+inline void copy(char* buf, size_t startpos, size_t len)
 {
 	for (size_t i = 0; i < len; ++i)
 		buf[i] = buf[i + startpos];
 }
-const size_t def_size = 1024 * 512;
-
-string ParseUploadData(
-	ssl::stream<beast::tcp_stream>& stream,
-	beast::flat_buffer& buffer,
-	http::request_parser<http::buffer_body>& parser,
-	std::string upload_folder)
+class ParseUploadData
 {
-	char buf[def_size] = {};
-	size_t st = 0;
-	size_t buf_size;
-	//std::string  temp_file_path = "temp.txt";
-	//ifstream fin(temp_file_path.c_str(), ios::binary);
-
-	string boundary;
-	//getline(fin, boundary);
-	boundary = "--" + boundary;
-	size_t round = 0;
-	//cout << "READY FOR LOOP\n";
-	while (1)
-	{
-		//	////cout<<"LOOP STARTED"; 
-		round++;
-		//cout << "round:" << round << '\n';
+	private:
+		ssl::stream<beast::tcp_stream> &stream;
+		beast::flat_buffer &buffer;
+		http::request_parser<http::buffer_body> &parser;
+		std::string &upload_folder;
+		std::string &boundary;
+		char buf[1024 * 512] = {};
+		size_t st = 0;
+		size_t buf_size;
 		string filename;
-		//fin.read(buf + st, def_size - st);
-		parser.get().body().data = buf+st;
-		parser.get().body().size = sizeof(buf)-st;
-		http::async_read(stream, buffer, parser,
-			[](beast::error_code ec, std::size_t bytes_transferred)
-			{
-				if (ec == http::error::need_buffer)
-					ec = {};
-				if (ec)
-					return fail(ec, "read");
-			});
-		buf_size =sizeof(buf) - parser.get().body().size ;
-		parser.get().body().more = !parser.is_done();
-		cout << "part_of_buf:\n";
-		for(int i=0;i<1024;i++)
+		ofstream fout;
+		size_t boundary_size;
+		string fullpath;
+		
+	public :
+		string result;
+		ParseUploadData(
+			ssl::stream<beast::tcp_stream>& stream_,     
+			beast::flat_buffer& buffer_,                 
+			http::request_parser<http::buffer_body>& parser_, 
+			std::string& upload_folder_,                 
+			std::string& boundary_                       
+		) :
+			stream(stream_),          
+			buffer(buffer_),
+			parser(parser_),
+			upload_folder(upload_folder_),
+			boundary(boundary_)
 		{
-			cout << buf[i];
+			boundary_size = boundary.size();
+			upload_folder = UTF8ToLocal(upload_folder);
 		}
-		string temp_a = "filename=\"";
-		string temp_b = "\"";
-		string temp_c = "\r\n\r\n";
-		size_t filename_startpos = find(buf, temp_a, 0, buf_size);
-		//cout << "fp:" << filename_startpos << '\n';
-		if (filename_startpos == -1) return "";
-		size_t filename_endpos = find(buf, temp_b, filename_startpos + 10, buf_size - filename_startpos - 10);
-		for (size_t i = filename_startpos + 10; i < filename_endpos; ++i)
+		inline void start()
 		{
-			filename += buf[i];
-		}
-		size_t content_startpos = find(buf, temp_c, filename_endpos, buf_size - filename_endpos);
-		//cout << "csp:" << content_startpos << '\n';
-		copy(buf, content_startpos + 4, buf_size - content_startpos - 4);
-		st = buf_size - content_startpos - 4;
-		upload_folder=UTF8ToLocal(upload_folder);
-		filename=UTF8ToLocal(filename);
-		string fullpath = upload_folder + "/" + filename;
-		//cout << fullpath << '\n';
-		fs::path path(fullpath);
-		fs::create_directories(path.parent_path());
-
-		ofstream fout(fullpath.c_str(), ios::binary);
-		size_t boundary_size = boundary.size();
-		size_t total_gcount = 0;
-		//cout << "Ready for loop2\n";
-		//system("pause");
-		while (1)
-		{
+			// << "start's method:" << parser.get().method_string() << '\n';
 			parser.get().body().data = buf + st;
 			parser.get().body().size = sizeof(buf) - st;
 			http::async_read(stream, buffer, parser,
-				[](beast::error_code ec, std::size_t bytes_transferred)
-				{
+				[this](beast::error_code ec,size_t bytes_transferred) {
+					boost::ignore_unused(bytes_transferred);
 					if (ec == http::error::need_buffer)
 						ec = {};
 					if (ec)
-						return fail(ec, "read");
+					{
+						return fail(ec, "read start");
+					}
+					ready_for_part();
+				});
+		}
+		inline void ready_for_part()
+		{
+			buf_size = sizeof(buf) - parser.get().body().size;
+			parser.get().body().more = !parser.is_done();
+			string temp_a = "filename=\"";
+			string temp_b = "\"";
+			string temp_c = "\r\n\r\n";
+			size_t filename_startpos = find(buf, temp_a, 0, buf_size);
+			if (filename_startpos == -1) result="";
+			size_t filename_endpos = find(buf, temp_b, filename_startpos + 10, buf_size - filename_startpos - 10);
+			for (size_t i = filename_startpos + 10; i < filename_endpos; ++i)
+			{
+				filename += buf[i];
+			}
+			size_t content_startpos = find(buf, temp_c, filename_endpos, buf_size - filename_endpos);
+			copy(buf, content_startpos + 4, buf_size - content_startpos - 4);
+			st = buf_size - content_startpos - 4;
+			
+			filename = UTF8ToLocal(filename);
+			fullpath = upload_folder + "/" + filename;
+			fs::path path(fullpath);
+			fs::create_directories(path.parent_path());
+
+			on_part_read();
+		}
+		inline void on_part_read()
+		{
+			parser.get().body().data = buf + st;
+			parser.get().body().size = sizeof(buf) - st;
+			fout.open(fullpath.c_str(), ios::binary);
+			http::async_read(stream, buffer, parser,
+				[this](beast::error_code ec, size_t bytes_transferred) {
+					boost::ignore_unused(bytes_transferred);
+					if (ec == http::error::need_buffer)
+						ec = {};
+					if (ec)
+					{
+						return fail(ec, "read on_part");
+					}
+					on_part();
 				});
 			buf_size = sizeof(buf) - parser.get().body().size;
 			parser.get().body().more = !parser.is_done();
+		}
+		inline void on_part()
+		{	
 			string temp_d = "\r\n" + boundary;
 			size_t content_endpos = find(buf, temp_d, 0, buf_size);
-			//cout << "cep:" << content_endpos << '\n';
-			////cout << "partofce:" << buf[content_endpos + 2] << '\n';
-			//system("pause");
 			if (content_endpos == -1)
 			{
 				fout.write(buf, buf_size - boundary_size - 2);
-				total_gcount += (buf_size - boundary_size - 2);
-				//cout << "fout.gcount(total):" << total_gcount << '\n';
+
 
 				copy(buf, buf_size - boundary_size - 2, boundary_size + 2);
 				st = boundary_size + 2;
-				continue;
+				on_part_read();
 			}
 			fout.write(buf, content_endpos);
 			copy(buf, content_endpos, buf_size - content_endpos);
 			st = buf_size - content_endpos;
-			//cout << "found:st:" << st << '\n';
 			fout.close();
-			break;
 		}
-		//	////cout<<"LOOP ENDED"; 
-	}
-	//	////cout<<"AT THE ENDOF FUNC";
-}
+};
 // 
 http::message_generator
 handle_upload_request(
 	ssl::stream<beast::tcp_stream>& stream,
 	beast::flat_buffer& buffer,
 	http::request_parser<http::buffer_body> &parser,
-	const std::string upload_dir) {
+	std::string upload_dir,
+	string &boundary) {
 	http::response<beast::http::string_body> res;
     res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
     res.set(http::field::content_type, "text/plain");
     res.keep_alive(true);
-    res.body() = ParseUploadData(stream,buffer,parser,upload_dir);
+	boundary = "--"+boundary;
+
+	
+	//cout << "Before func:" << parser.get().method() << '\n';
+	ParseUploadData ps(stream,buffer,parser,upload_dir,boundary);
+	ps.start();
+    res.body() = ps.result;
     if (res.body().empty())
         res.body() = "Succeeded!";
     res.prepare_payload();
 	return res;
 }
 
-void logout(http::request<http::buffer_body> &req_, ssl::stream<beast::tcp_stream> &stream_) {
+inline void logout(http::request<http::buffer_body> &req_, ssl::stream<beast::tcp_stream> &stream_) {
 	tcp::endpoint remote_endpoint = stream_.next_layer().socket().remote_endpoint();
 	std::string client_ip = remote_endpoint.address().to_string();
 	boost::posix_time::ptime currentTime = boost::posix_time::second_clock::local_time();

@@ -93,7 +93,7 @@ public:
     void
         do_read()
     {
-		parser_.emplace();
+        parser_.emplace();
         // Make the request empty before reading,
         // otherwise the operation behavior is undefined.
         // Read a request
@@ -116,9 +116,8 @@ public:
         }
         if (ec)
         {
-            return fail(ec, "read");
+            return fail(ec, "on_read");
         }        
-        
         auto req = parser_.get().get();
         std::string cookie_username, cookie_password;
         decoded_req_target = url_decode(req.target());
@@ -173,12 +172,12 @@ public:
 					return;
                 }
 				boundary = boundary.substr(boundary_start_pos,boundary_end_pos-boundary_start_pos);
-            //    http::request_parser<http::buffer_body> parser{ std::move(*parser_) };
-                send_response(handle_upload_request(stream_, buffer_, *parser_,upload_dir + decoded_req_target.substr(6)));
+                
+                send_response(handle_upload_request(stream_, buffer_, *parser_,upload_dir + decoded_req_target.substr(6),boundary));
             }
             else
             {
-                http::request_parser<http::string_body> parser{ std::move(*parser_) };
+                http::request_parser<http::string_body> parser{ std::move(*parser_) };//It should work,due to https://www.boost.org/doc/libs/1_87_0/libs/beast/doc/html/beast/more_examples/change_body_type.html
                 parser.body_limit(1024);
                 http::async_read(stream_, buffer_, parser,
 					[](beast::error_code ec, std::size_t bytes_transferred)
@@ -224,9 +223,9 @@ public:
             // This means we should close the connection
             return do_close();
         }
-        // Read another request    So keep_alive is meaningless now...
-     //   do_read();
-        do_close();
+        // Read another request  
+        do_read();
+       // do_close();
     }
 
     void
