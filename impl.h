@@ -1,56 +1,106 @@
 #pragma once
-#include <openssl/evp.h>
-#include <boost/asio/dispatch.hpp>
-#include <boost/asio/ssl.hpp>
-#include <boost/asio/strand.hpp>
-#include <boost/config.hpp>
-#include <algorithm>
-#include <cstdlib>
-#include <iostream>
-#include <memory>
-#include <string>
-#include <thread>
-#include <vector>
-#include <boost/asio.hpp>
-#include <boost/beast.hpp>
-#include <boost/filesystem.hpp>
-#include <fstream>
-#include <boost/property_tree/ptree.hpp>
-#include <boost/property_tree/ini_parser.hpp>
-#include <iomanip>
-#include <map>
-#include <boost/date_time/posix_time/posix_time.hpp>
-#include <boost/date_time/gregorian/gregorian.hpp>
 #include "others.h"
-#include "uploads.h"
-#include "users.h"
-namespace beast = boost::beast;         // from <boost/beast.hpp>
-namespace http = beast::http;           // from <boost/beast/http.hpp>
-namespace net = boost::asio;            // from <boost/asio.hpp>
-namespace ssl = boost::asio::ssl;       // from <boost/asio/ssl.hpp>
-using tcp = boost::asio::ip::tcp;       // from <boost/asio/ip/tcp.hpp>
-namespace fs = boost::filesystem;  // 用于文件操作
-namespace ptree = boost::property_tree;
-std::string decoded_req_target;
+using namespace std;
+// Return a reasonable mime type based on the extension of a file.
+beast::string_view
+mime_type(beast::string_view path)
+{
+    using beast::iequals;
+    auto const ext = [&path]
+        {
+            auto const pos = path.rfind(".");
+            if (pos == beast::string_view::npos)
+                return beast::string_view{};
+            return path.substr(pos);
+        }();
+    if (iequals(ext, ".htm"))  return "text/html";
+    if (iequals(ext, ".html")) return "text/html";
+    if (iequals(ext, ".php"))  return "text/html";
+    if (iequals(ext, ".css"))  return "text/css";
+    if (iequals(ext, ".txt"))  return "text/plain";
+    if (iequals(ext, ".js"))   return "application/javascript";
+    if (iequals(ext, ".json")) return "application/json";
+    if (iequals(ext, ".xml"))  return "application/xml";
+    if (iequals(ext, ".swf"))  return "application/x-shockwave-flash";
+    if (iequals(ext, ".flv"))  return "video/x-flv";
+    if (iequals(ext, ".png"))  return "image/png";
+    if (iequals(ext, ".jpe"))  return "image/jpeg";
+    if (iequals(ext, ".jpeg")) return "image/jpeg";
+    if (iequals(ext, ".jpg"))  return "image/jpeg";
+    if (iequals(ext, ".gif"))  return "image/gif";
+    if (iequals(ext, ".bmp"))  return "image/bmp";
+    if (iequals(ext, ".ico"))  return "image/vnd.microsoft.icon";
+    if (iequals(ext, ".tiff")) return "image/tiff";
+    if (iequals(ext, ".tif"))  return "image/tiff";
+    if (iequals(ext, ".svg"))  return "image/svg+xml";
+    if (iequals(ext, ".svgz")) return "image/svg+xml";
+    return "application/text";
+}
+// Append an HTTP rel-path to a local filesystem path.
+// The returned path is normalized for the platform.
+std::string
+path_cat(
+    beast::string_view base,
+    beast::string_view path)
+{
+    if (base.empty())
+        return std::string(path);
+    std::string result(base);
+#ifdef BOOST_MSVC
+    char constexpr path_separator = '\\';
+    if (result.back() == path_separator)
+        result.resize(result.size() - 1);
+    result.append(path.data(), path.size());
+    for (auto& c : result)
+        if (c == '/')
+            c = path_separator;
+#else
+    char constexpr path_separator = '/';
+    if (result.back() == path_separator)
+        result.resize(result.size() - 1);
+    result.append(path.data(), path.size());
+#endif
+    return result;
+}
+template <class Body, class Allocator>
+bool UAC(http::request<Body, http::basic_fields<Allocator>>& req)
+{
+    return true;
+}
 
+// Return a response for the given request.
 template <class Body, class Allocator>
 http::message_generator
-handle_get_request(http::request<Body, http::basic_fields<Allocator>>& req, const std::string &p4,std::string &path)
+handle_get_request(
+    beast::string_view doc_root,
+    http::request<Body, http::basic_fields<Allocator>>&& req)
 {
-    beast::error_code ec;
-    // Returns a not found response
-    auto const not_found = //404文件响应
-        [&req,&p4](beast::string_view target)
+    // Returns a bad request response
+    auto const bad_request =
+        [&req](beast::string_view why)
         {
-            http::response<http::file_body> res{ http::status::ok, req.version() };
+            http::response<http::string_body> res{ http::status::bad_request, req.version() };
             res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
             res.set(http::field::content_type, "text/html");
             res.keep_alive(req.keep_alive());
-            beast::error_code tec;
-            res.body().open(p4.c_str(), beast::file_mode::read, tec);
+            res.body() = std::string(why);
             res.prepare_payload();
             return res;
         };
+
+    // Returns a not found response
+    auto const not_found =
+        [&req](beast::string_view target)
+        {
+            http::response<http::string_body> res{ http::status::not_found, req.version() };
+            res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
+            res.set(http::field::content_type, "text/html");
+            res.keep_alive(req.keep_alive());
+            res.body() = "The resource '" + std::string(target) + "' was not found.";
+            res.prepare_payload();
+            return res;
+        };
+
     // Returns a server error response
     auto const server_error =
         [&req](beast::string_view what)
@@ -63,6 +113,19 @@ handle_get_request(http::request<Body, http::basic_fields<Allocator>>& req, cons
             res.prepare_payload();
             return res;
         };
+
+
+
+    // Build the path to the requested file
+    std::string path = path_cat(doc_root, req.target());
+    if (req.target().back() == '/')
+    {
+        path.append(config.custom_file.substr(1));
+    }
+        
+
+    // Attempt to open the file
+    beast::error_code ec;
     http::file_body::value_type body;
     body.open(path.c_str(), beast::file_mode::scan, ec);
 
@@ -70,180 +133,83 @@ handle_get_request(http::request<Body, http::basic_fields<Allocator>>& req, cons
     if (ec == beast::errc::no_such_file_or_directory)
         return not_found(req.target());
 
-    // Cache the size since we need it after the move
-    auto const size = body.size();
-        fs::path directoryPath(path);
-        if (fs::is_directory(directoryPath))
-        {
-            std::string temp;
-            http::response<http::string_body> res{ http::status::ok,req.version() };
-            for (fs::directory_iterator it(directoryPath); it != fs::directory_iterator(); ++it)
-            {
-                const auto& path = it->path();
-                const auto& status = it->status();
-
-                // 获取文件（夹）的大小
-                std::uintmax_t size = fs::is_directory(status) ? 0 : fs::file_size(path);
-                if (fs::is_directory(it->status()))
-                {
-                    temp = it->path().filename().string() + "*Folder*" + std::to_string(size) + '\n';
-                    temp = AnsiToUtf8(temp);
-                    res.body().append(temp);
-                }
-                else
-                {
-                    temp = it->path().filename().string() + "*File*" + std::to_string(size) + '\n';
-                    temp = AnsiToUtf8(temp);
-                    res.body().append(temp);
-                }
-            }
-            if (res.body().empty())
-                res.body() = AnsiToUtf8("Empty");
-            //cout << "resbody:"<<res.body() << endl;
-            res.prepare_payload();
-            return res;
-
-        }
-        // Check if the client has a cached version
-        std::string eTag = calculateETag(path);
-        auto it = req.find(http::field::if_none_match);
-        if (it != req.end())
-        {
-            std::string clientETag = it->value();
-            if (clientETag == eTag)
-            {
-                http::response<http::empty_body> res{ http::status::not_modified, req.version() };
-                res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
-                res.keep_alive(req.keep_alive());
-                return res;
-            }
-        }
-
-        http::response<http::file_body> res{
-            std::piecewise_construct,
-            std::make_tuple(std::move(body)),
-            std::make_tuple(http::status::ok, req.version()) };
-        res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
-        res.set(http::field::content_type, mime_type(path));
-        res.set(http::field::etag, eTag);//设置eTag
-        res.content_length(size);
-        res.keep_alive(req.keep_alive());
-        return res;
-
     // Handle an unknown error
     if (ec)
-    {
-        cout << "EC:" << ec.message() << endl;
         return server_error(ec.message());
-    }
+
+    // Cache the size since we need it after the move
+    auto const size = body.size();
+
+    // Respond to GET request
+    http::response<http::file_body> res{
+        std::piecewise_construct,
+        std::make_tuple(std::move(body)),
+        std::make_tuple(http::status::ok, req.version()) };
+    res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
+    res.set(http::field::content_type, mime_type(path));
+    res.content_length(size);
+    res.keep_alive(req.keep_alive());
+    return res;
 }
+
+
 template <class Body, class Allocator>
 http::message_generator
-handle_post_request(http::request<Body, http::basic_fields<Allocator>>&& req,
-    const string &cookie_username,const string &cookie_password)
+handle_post_request(
+    beast::string_view doc_root,
+    http::request<Body, http::basic_fields<Allocator>>&& req)
 {
-	//Returns a plain response
-	auto const plain_request =
-		[&req](beast::string_view why)
-		{
-			http::response<http::string_body> res{ http::status::ok, req.version() };
-			res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
-			res.set(http::field::content_type, "text/plain");
-			res.keep_alive(req.keep_alive());
-			res.body() = std::string(why);
-			res.prepare_payload();
-			return res;
-		};
-    std::string req_username;
-	std::string req_password;
-	std::string request_body = req.body();
-    if (decoded_req_target == "/login")
-    {
-        size_t pos = request_body.find("username=");
-        if (pos != std::string::npos) {
-            pos += 9;
-            size_t end_pos = request_body.find("&", pos);
-            req_username = request_body.substr(pos, end_pos - pos);
-        }
-        pos = request_body.find("password=");
-        if (pos != std::string::npos) {
-            pos += 9;
-            req_password = request_body.substr(pos);
-        }
-        if (req_username.size() > 32 || req_password.size() > 32 || req_password.size() == 0 || req_username.size() == 0)
-            return plain_request("Invalid");
-        if (UAP(req_username, req_password))
-            return plain_request("OK");
-        else
-            return plain_request("Username or Password wrong");
-    }
-    else if (decoded_req_target == "/register")
-    {
-        size_t pos = request_body.find("username=");
-        if (pos != std::string::npos) {
-            pos += 9;
-            size_t end_pos = request_body.find("&", pos);
-            if (end_pos == std::string::npos) {
-                return plain_request("Invalid");
-            }
-            else {
-                req_username = request_body.substr(pos, end_pos - pos);
-            }
-        }
-        pos = request_body.find("password=");
-        if (pos != std::string::npos) {
-            pos += 9;
-            req_password = request_body.substr(pos);
-        }
-        if (req_username.size() > 32 || req_password.size() > 32 || req_password.size() == 0 || req_username.size() == 0)
-            return plain_request("Invalid");
-        if (!AddUser(req_username, req_password)) {
-            return plain_request("Repeated");
-        }
-        else
-            return plain_request("OK");
-    }
-    else if (decoded_req_target == "/change")
-    {
+    // Returns a bad request response
+    auto const bad_request =
+        [&req](beast::string_view why)
+        {
+            http::response<http::string_body> res{ http::status::bad_request, req.version() };
+            res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
+            res.set(http::field::content_type, "text/html");
+            res.keep_alive(req.keep_alive());
+            res.body() = std::string(why);
+            res.prepare_payload();
+            return res;
+        };
+    return bad_request("user not supported");
+}
 
-        if (cookie_username == "guest")
-            return plain_request("No access");
+template <class Body, class Allocator>
+http::message_generator
+request_router(
+    beast::string_view doc_root,
+    http::request<Body, http::basic_fields<Allocator>>&& req)
+{
+    // Returns a bad request response
+    auto const bad_request =
+        [&req](beast::string_view why)
+        {
+            http::response<http::string_body> res{ http::status::bad_request, req.version() };
+            res.set(http::field::server, BOOST_BEAST_VERSION_STRING);
+            res.set(http::field::content_type, "text/html");
+            res.keep_alive(req.keep_alive());
+            res.body() = std::string(why);
+            res.prepare_payload();
+            return res;
+        };
+    // Request path must be absolute and not contain "..".
+    if (req.target().empty() ||
+        req.target()[0] != '/' ||
+        req.target().find("..") != beast::string_view::npos)
+        return bad_request("Illegal request-target");
 
-        size_t pos = request_body.find("username=");
-        if (pos != std::string::npos) {
-            pos += 9;
-            size_t end_pos = request_body.find("&", pos);
-            if (end_pos == std::string::npos) {
-                return plain_request("Invalid");
-            }
-            else {
-                req_username = request_body.substr(pos, end_pos - pos);
-            }
-        }
-        pos = request_body.find("password=");
-        if (pos != std::string::npos) {
-            pos += 9;
-            req_password = request_body.substr(pos);
-        }
-        if (req_username.size() > 32 || req_password.size() > 32 || req_password.size() == 0 || req_username.size() == 0)
-            return plain_request("Invalid");
-        if (is_Repeated(req_username) && req_username != cookie_username)
-            return plain_request("Repeated");
-        //std::cout << "LLLL:" << cookie_username << " " << req_username << " " << req_password << '\n';
-        if (CUP(cookie_username, req_username, req_password))
-            return plain_request("OK");
-        else
-            return plain_request("CUP failed");
-    }
-    else if (decoded_req_target == "/del")
-    {
-        if (cookie_username == "guest")
-            return plain_request("No access");
-        if (DelUser(cookie_username))
-            return plain_request("OK");
-        else
-            return plain_request("del failed");
-    }
-    else
-		return plain_request("unknown post target");
+    // 设置本地环境
+    boost::locale::generator gen;
+    std::locale loc = gen(""); // 系统默认locale
+
+    // UTF-8到本地编码(ANSI)转换
+    req.target() = boost::locale::conv::from_utf<char>(req.target(), loc);
+    if (!UAC(req))
+		return bad_request("UAC not passed");
+	if (req.method() == http::verb::get)
+		return handle_get_request(doc_root, std::move(req));
+	else if (req.method() == http::verb::post)
+		return handle_post_request(doc_root, std::move(req));
+	else 
+		return bad_request("Unknown HTTP-method");
 }
